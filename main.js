@@ -4,12 +4,16 @@ import VectorLayer from 'ol/layer/Vector';
 import TileLayer from 'ol/layer/Tile';
 import XYZSource from 'ol/source/XYZ';
 import VectorSource from 'ol/source/Vector';
+//import VectorContext from 'ol/render/VectorContext';
 import View from 'ol/View'
 import OSMSource from 'ol/source/OSM'
 import {GPX,KML} from 'ol/format';
 import TileDebug from 'ol/source/TileDebug';
 import {Style, Fill, Stroke} from 'ol/style';
 import {fromLonLat} from 'ol/proj';
+import Feature from 'ol/Feature';
+import Point from 'ol/geom/Point';
+import Icon from 'ol/style/Icon';
 import {defaults as defaultInteractions, DragAndDrop} from 'ol/interaction';
 let gpxParser = require('gpxparser');
 import Chart from 'chart.js';
@@ -52,24 +56,50 @@ var tile= new TileLayer({
 var tiles=    new TileLayer({
       source: new TileDebug()
     });
+
 var dragAndDropInteraction = new DragAndDrop({
   formatConstructors: [
     GPX,
     KML,
   ]
 });
+var marker = new Feature({
+  geometry: new Point(fromLonLat([-2.5,51.5])),
+});
+marker.setStyle(
+  new Style({
+    image: new Icon({
+      color: '#ffffff',
+      imgSize: [44,44],
+      src: 'bikeicon-44px.png',
+      anchor: [0.64, 0.1],
+    }),
+  })
+);
+//console.log(marker);
+var vectorSource = new VectorSource({
+  features: [marker],
+});
+
+var vectorLayer = new VectorLayer({
+  source: vectorSource,
+});
+vectorLayer.setZIndex( 1001 ); 
 console.log ("creating map");
 var map= new Map({
   interactions: defaultInteractions().extend([dragAndDropInteraction]),
   target: 'map-container',
-  layers: [tile, tiles],
+  layers: [tile, tiles,vectorLayer],
   view: new View({
     center: fromLonLat([-2.5,51.5]),
   zoom: 14
   })
 });
 
-//Create the plot, empty for now (or rather, dummy data)
+var gpx = new gpxParser(); //Create gpxParser Object
+var trackFilenames={};
+
+//Create the plot, empty for now (or rather, hidden dummy data)
 
 var ctx = document.getElementById('myChart').getContext('2d');
 var myChart = new Chart(ctx, {
@@ -92,7 +122,8 @@ var myChart = new Chart(ctx, {
             borderWidth: 0,
             tension: 0,
             showLine: false,
-            fill:false
+            fill:false,
+            pointHoverRadius: 10,
         }]
     },
     options: {
@@ -118,8 +149,40 @@ var myChart = new Chart(ctx, {
         },
         legend: {
         	display:false
-        }
-    }
+        },
+		onHover: function(evt) {
+		var item = myChart.getElementAtEvent(evt);
+		if (item.length) {
+			//console.log("onHover",item, evt.type);
+			var index=item[0]._index
+			//console.log(">data", index, myChart.data.datasets[0].data[item[0]._index]);
+			var status = document.getElementById("location-status");
+			var series=myChart.data.datasets[item[0]._datasetIndex]
+			console.log(series.data[index]);
+			status.innerHTML = series.label+": "+parseFloat(series.data[index].x)+" km, = "+(100*parseFloat(series.data[index].x)/parseFloat(series.data[series.data.length-1].x)).toFixed(0)+"%, "+series.data[index].y+" m cumulative climb = "+(100*series.data[index].y/series.data[series.data.length-1].y).toFixed(0)+
+			"% <small><small>(altitude "+gpx.tracks[0].points[index].ele.toFixed(0)+" Lat, Long:"+gpx.tracks[0].points[index].lat.toFixed(4)+","+gpx.tracks[0].points[index].lon.toFixed(4)+")</small></small>";
+			var dist=series.data[index].x;//it looks like chartjs returns the index in resampled data, so we have to find the cumulative distance in gpxparser's data instead of just using the index  
+		    var trackNum=0
+			for (trackNum=0; trackNum<gpx.tracks.length; trackNum++) {
+		    	if (series.label==trackFilenames[gpx.tracks[trackNum].name]) {
+		    		console.log("breaking");
+		    		break;
+		    	}
+		    }
+			var closestPoint = gpx.tracks[trackNum].distance.cumul.findIndex(function (element) {//not guaranteed to be closest but good enough 
+		    		return element > (dist*1000)-10; 
+		    }); 
+		    var currentPoint = new Point(fromLonLat([gpx.tracks[trackNum].points[closestPoint].lon,gpx.tracks[trackNum].points[closestPoint].lat]));
+		    var marker_to_update=vectorSource.getFeatures()[0];
+
+		    marker_to_update.set('geometry', currentPoint);
+
+		    
+
+
+		}
+		
+  }}
 });
 
 
@@ -129,7 +192,7 @@ dragAndDropInteraction.on('addfeatures', function(event) {
   var vectorSource = new VectorSource({
     features: event.features
   });
-  console.log(event.file)
+  //console.log(event.file)
   if (event.file.type.includes("kml")){
   	  StrokeColour="red";
   } else { //GPX
@@ -147,26 +210,25 @@ dragAndDropInteraction.on('addfeatures', function(event) {
   	  var climb_so_far=[];
   	  fr.onload=function(){ 
 		var route_text=fr.result; 
-		var gpx = new gpxParser(); //Create gpxParser Object
 		gpx.parse(route_text); //parse gpx file from string data
-		var arrayLength = gpx.tracks[0].points.length;
+		var trackNum=gpx.tracks.length-1;
+		trackFilenames[gpx.tracks[trackNum].name]=event.file.name;
+		console.log(trackFilenames);
+
+		var arrayLength = gpx.tracks[trackNum].points.length;
 		for (var i = 0; i < arrayLength; i++) {
 			if (i>0){
-				height_diff=gpx.tracks[0].points[i].ele-gpx.tracks[0].points[i-1].ele
+				height_diff=gpx.tracks[trackNum].points[i].ele-gpx.tracks[trackNum].points[i-1].ele
 				if (height_diff>threshold_climb){
 					total_climb+=height_diff;
 					climb_so_far.push(Math.floor(total_climb));//Climb to nearest 1m
-					distance.push(Math.floor(gpx.tracks[0].distance.cumul[i]/10)/100)//Distance to nearest 10m
+					distance.push(gpx.tracks[trackNum].distance.cumul[i])//Distance to nearest 10m
 				}
 			}
 		}
 		total_climb=Math.floor(total_climb)
 		console.log("total_climb",total_climb )
-		var total_distance=Math.floor(gpx.tracks[0].distance.total/100)/10 //round to nearest 100m
-		//console.log("total distance",total_distance )
-		//console.log("total climb (GPXparser)",Math.floor(gpx.tracks[0].elevation.pos))
-		//console.log(distance)
-		//console.log(climb_so_far)
+		var total_distance=Math.floor(gpx.tracks[trackNum].distance.total/100)/10 //round to nearest 100m
 		var para=document.createElement("p");
 		var node=document.createTextNode(event.file.name.concat(":\n\xa0Distance=",total_distance,"\xa0km ", "\xa0Climb=",total_climb,"\xa0m"));
 		para.appendChild(node);
@@ -178,12 +240,11 @@ dragAndDropInteraction.on('addfeatures', function(event) {
 		//perhaps also rolling elevation
 		const plotdata = distance.map((x, i) => {
 		  return {
-			x: x,
+			x: (x/1000).toFixed(1),
 			y: climb_so_far[i]
 		  };
 		  
 	   });
-	   console.log(plotdata)
 	   myChart.data.datasets.push({
 	   		   label: event.file.name,
 	   	   	   data: plotdata,
@@ -200,11 +261,12 @@ dragAndDropInteraction.on('addfeatures', function(event) {
 	   	   	   
 	   });
 	   myChart.update();
-	   console.log(myChart.data)
+
       } 
           
       fr.readAsText(event.file); 
   }
+
   map.addLayer(new VectorLayer({
     source: vectorSource,
      style: new Style({
@@ -219,14 +281,8 @@ dragAndDropInteraction.on('addfeatures', function(event) {
   }));
 
 
+
   map.getView().fit(vectorSource.getExtent());
 });
 
 
-/*
-var zoomtogpx = document.getElementById('zoomtogpx');
-zoomtogpx.addEventListener('click', function() {
-  var feature = gpx.getSource().getFeatures()[0];
-  var polygon = feature.getGeometry();
-  map.getView().fit(polygon, {padding: [170, 50, 30, 150]});
-}, false);*/
